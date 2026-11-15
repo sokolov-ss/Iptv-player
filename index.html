@@ -479,7 +479,7 @@
     <!-- PLAYER -->
     <main class="player-area">
       <div class="video-container">
-        <video id="video" controls playsinline></video>
+        <video id="video" controls playsinline webkit-playsinline allowfullscreen></video>
         <div class="player-overlay visible" id="overlay">
           <div style="text-align:center; color:#aaa;">
             <div style="font-size:48px; margin-bottom:12px;">▶️</div>
@@ -523,6 +523,7 @@
     let channels = [];
     let currentChannel = null;
     let hls = null;
+    let lastChannelUrl = localStorage.getItem('iptv_last_channel') || null;
 
     // ========== INIT ==========
     function init() {
@@ -532,6 +533,14 @@
         if (pl) {
           channels = pl.channels || [];
           renderChannels();
+
+          // Автовоспроизведение последнего канала
+          if (lastChannelUrl) {
+            const idx = channels.findIndex(ch => ch.url === lastChannelUrl);
+            if (idx !== -1) {
+              setTimeout(() => playChannel(idx, true), 400);
+            }
+          }
         }
       }
     }
@@ -603,15 +612,13 @@
       status.className = 'status loading';
 
       try {
-        // Try to fetch. Note: many IPTV servers block CORS.
-        // For prototype we use a CORS proxy as fallback for demo.
         let text;
         try {
           const res = await fetch(url);
           if (!res.ok) throw new Error('HTTP ' + res.status);
           text = await res.text();
         } catch (e) {
-          // Fallback via public CORS proxy (only for testing)
+          // Fallback via public CORS proxy
           const proxyUrl = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url);
           const res2 = await fetch(proxyUrl);
           if (!res2.ok) throw new Error('Не удалось загрузить плейлист (CORS или ссылка недоступна)');
@@ -711,11 +718,14 @@
     }
 
     // ========== PLAYER ==========
-    function playChannel(index) {
+    function playChannel(index, isAuto = false) {
       const ch = channels[index];
       if (!ch) return;
 
       currentChannel = ch;
+      lastChannelUrl = ch.url;
+      localStorage.setItem('iptv_last_channel', ch.url);
+
       renderChannels(document.getElementById('searchInput').value);
 
       const video = document.getElementById('video');
@@ -727,23 +737,50 @@
       nowPlaying.style.display = 'flex';
       overlay.classList.remove('visible');
 
-      // Destroy previous HLS instance
       if (hls) {
         hls.destroy();
         hls = null;
       }
 
+      video.removeAttribute('src');
+      video.load();
+
       const url = ch.url;
+
+      const tryPlay = () => {
+        const playPromise = video.play();
+        if (playPromise !== undefined) {
+          playPromise.catch(() => {
+            video.muted = true;
+            video.play().then(() => {
+              if (isAuto) {
+                overlay.innerHTML = `<div style="text-align:center;color:#fff;">
+                  <div style="font-size:28px;margin-bottom:8px;">🔊</div>
+                  <div>Нажмите на видео, чтобы включить звук</div>
+                </div>`;
+                overlay.classList.add('visible');
+                overlay.style.pointerEvents = 'auto';
+                overlay.onclick = () => {
+                  video.muted = false;
+                  overlay.classList.remove('visible');
+                  overlay.onclick = null;
+                };
+              }
+            }).catch(() => {});
+          });
+        }
+      };
 
       if (Hls.isSupported() && (url.includes('.m3u8') || url.includes('m3u8') || !url.match(/\.(mp4|mkv|avi|ts)(\?|$)/i))) {
         hls = new Hls({
           enableWorker: true,
           lowLatencyMode: true,
+          maxBufferLength: 30,
         });
         hls.loadSource(url);
         hls.attachMedia(video);
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          video.play().catch(() => {});
+          tryPlay();
         });
         hls.on(Hls.Events.ERROR, (event, data) => {
           if (data.fatal) {
@@ -757,13 +794,11 @@
           }
         });
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        // Native HLS (Safari)
         video.src = url;
-        video.play().catch(() => {});
+        video.addEventListener('loadedmetadata', tryPlay, { once: true });
       } else {
-        // Progressive download fallback
         video.src = url;
-        video.play().catch(() => {});
+        video.addEventListener('loadedmetadata', tryPlay, { once: true });
       }
     }
 
@@ -773,12 +808,10 @@
       return div.innerHTML;
     }
 
-    // Close modal on outside click
     document.getElementById('modal').addEventListener('click', (e) => {
       if (e.target.id === 'modal') closeModal();
     });
 
-    // Init
     init();
   </script>
 </body>
